@@ -142,24 +142,27 @@ jobs:
       #    - CC=mipsel-linux-gnu-gcc: produces MIPS32 object code
       #    - CFLAGS puts our patched include dir FIRST so pyconfig.h is found
       #      before Python 3.8's default include path (added later by distutils)
+      #    - --no-build-isolation: use the current env's setuptools/cffi instead
+      #      of letting pip download a fresh build venv (avoids setuptools>=77
+      #      requiring packaging>=24.2 which isn't present in Python 3.8).
       #    - --plat-name linux_mipsel: wheel platform tag
       # -----------------------------------------------------------------------
       - name: Cross-compile zstandard for mipsel
         run: |
-          mkdir -p /tmp/zstd-src /tmp/mipsel-wheels
+          # Pre-install build tools in the Python 3.8 environment so that
+          # --no-build-isolation can use them without triggering a fresh download.
+          pip3.8 install --quiet "packaging>=24.2" "setuptools>=66.1" wheel cffi
 
-          pip3 download --no-binary :all: zstandard==0.23.0 -d /tmp/zstd-src -q
-          cd /tmp/zstd-src
-          tar xf zstandard-0.23.0.tar.gz
-          cd zstandard-0.23.0
+          mkdir -p /tmp/zstd-src /tmp/mipsel-wheels
 
           CC=mipsel-linux-gnu-gcc \
           LDSHARED="mipsel-linux-gnu-gcc -shared" \
           CFLAGS="-fPIC -march=mips32r2 -EL -I/tmp/mips-python38-include" \
-          LDFLAGS="-L/tmp/mips-python38-include" \
-          python3.8 setup.py bdist_wheel \
-            --plat-name linux_mipsel \
-            --dist-dir /tmp/mipsel-wheels/
+          pip3.8 wheel zstandard==0.23.0 \
+            --no-binary :all: \
+            --no-deps \
+            --no-build-isolation \
+            -w /tmp/mipsel-wheels/
 
           echo "=== Built wheels ==="
           ls -lh /tmp/mipsel-wheels/
