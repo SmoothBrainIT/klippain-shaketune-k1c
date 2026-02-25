@@ -154,23 +154,99 @@ install_python_deps() {
     local pip="$1"
     printf "[SETUP] Installing K1C Python dependencies (zstandard + GitPython)...\n"
 
-    # zstandard: we need a MIPS32-compatible wheel.
-    # Try a prebuilt wheel from the fork's releases first, then fall back to pip.
+    # ---- zstandard ----
+    # Download our prebuilt MIPS32 wheel and install it by extracting the zip
+    # contents directly, bypassing pip's platform-tag check.  This is necessary
+    # because:
+    #   (a) busybox wget may fail on GitHub's CDN redirect chain
+    #   (b) pip's platform tag (linux_mips / linux_mipsel) varies by firmware
+    #   (c) the installed .so must match Python's actual EXT_SUFFIX, which we
+    #       read at runtime from sysconfig rather than assuming a fixed suffix.
     ZSTD_WHEEL_URL="https://github.com/SmoothBrainIT/klippain-shaketune-k1c/releases/latest/download/zstandard-mips32.whl"
-    ZSTD_WHEEL_PATH="/tmp/zstandard_mips32.whl"
 
-    if wget -q -O "${ZSTD_WHEEL_PATH}" "${ZSTD_WHEEL_URL}" 2>/dev/null; then
-        printf "[SETUP] Using prebuilt MIPS32 zstandard wheel...\n"
-        $pip install --no-deps "${ZSTD_WHEEL_PATH}" || {
-            printf "[WARN] Prebuilt wheel install failed, trying PyPI (may fail on MIPS)...\n"
-            $pip install "zstandard==0.23.0"
-        }
-        rm -f "${ZSTD_WHEEL_PATH}"
+    # Write the install helper to a temp file to avoid shell-quoting issues.
+    cat > /tmp/_st_zstd_install.py << 'PYEOF'
+import os, sys, ssl, shutil, zipfile, sysconfig
+
+try:
+    import site
+    site_pkgs = (site.getsitepackages() if hasattr(site, "getsitepackages")
+                 else [sysconfig.get_path("purelib")])[0]
+except Exception:
+    site_pkgs = sysconfig.get_path("purelib")
+
+ext      = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+wheel_url = sys.argv[1]
+wheel_path = "/tmp/zstandard_mips32.whl"
+
+print("[SETUP] EXT_SUFFIX   :", ext)
+print("[SETUP] site-packages:", site_pkgs)
+
+# --- Download via Python urllib (handles TLS + redirects better than busybox wget) ---
+print("[SETUP] Downloading", wheel_url)
+try:
+    import urllib.request
+    ctx = ssl._create_unverified_context()
+    req = urllib.request.Request(wheel_url, headers={"User-Agent": "install_k1c/1.0"})
+    with urllib.request.urlopen(req, context=ctx) as resp:
+        data = resp.read()
+    with open(wheel_path, "wb") as f:
+        f.write(data)
+    print("[SETUP] Downloaded %d bytes" % len(data))
+except Exception as e:
+    print("[ERROR] Download failed:", e, file=sys.stderr)
+    sys.exit(1)
+
+# --- Extract wheel (it is a zip) and install to site-packages ---
+tmpdir = "/tmp/_zstd_extract"
+if os.path.exists(tmpdir):
+    shutil.rmtree(tmpdir)
+with zipfile.ZipFile(wheel_path) as z:
+    z.extractall(tmpdir)
+
+pkg_src = os.path.join(tmpdir, "zstandard")
+pkg_dst = os.path.join(site_pkgs, "zstandard")
+if os.path.exists(pkg_dst):
+    shutil.rmtree(pkg_dst)
+os.makedirs(pkg_dst)
+
+for fname in os.listdir(pkg_src):
+    src = os.path.join(pkg_src, fname)
+    if fname.endswith(".so"):
+        # Rename to match this Python's actual extension suffix
+        module = fname.split(".")[0]
+        dst = os.path.join(pkg_dst, module + ext)
+        shutil.copy2(src, dst)
+        print("[SETUP] Installed:", os.path.basename(dst))
+    else:
+        shutil.copy2(src, os.path.join(pkg_dst, fname))
+
+# Copy .dist-info so pip/moonraker can track the package
+for entry in os.listdir(tmpdir):
+    if entry.endswith(".dist-info"):
+        d_src = os.path.join(tmpdir, entry)
+        d_dst = os.path.join(site_pkgs, entry)
+        if os.path.exists(d_dst):
+            shutil.rmtree(d_dst)
+        shutil.copytree(d_src, d_dst)
+
+shutil.rmtree(tmpdir)
+os.remove(wheel_path)
+print("[SETUP] zstandard extraction complete.")
+PYEOF
+
+    if "$PYTHON" /tmp/_st_zstd_install.py "$ZSTD_WHEEL_URL"; then
+        if "$PYTHON" -c "import zstandard; print('[SETUP] zstandard', zstandard.__version__, 'import OK')"; then
+            printf "[SETUP] zstandard installed successfully.\n"
+        else
+            printf "[ERROR] zstandard installed but import failed.\n"
+            exit 1
+        fi
     else
-        printf "[WARN] Could not download MIPS32 wheel, trying PyPI...\n"
-        printf "       If this fails, see docs/k1c_setup.md for cross-compilation instructions.\n"
+        printf "[WARN] Prebuilt wheel install failed — trying PyPI (will likely fail, no C compiler on K1C).\n"
         $pip install "zstandard==0.23.0"
     fi
+    rm -f /tmp/_st_zstd_install.py
 
     # GitPython is pure Python — installs fine from PyPI on MIPS
     $pip install "GitPython==3.1.41"

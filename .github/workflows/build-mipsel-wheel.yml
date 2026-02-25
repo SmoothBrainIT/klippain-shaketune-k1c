@@ -191,21 +191,26 @@ jobs:
           ls -lh /tmp/mipsel-wheels/
 
       # -----------------------------------------------------------------------
-      # 7. Retag wheel: fix platform tag + .so filename for mipsel
+      # 7. Retag wheel: fix platform tag + .so filename for linux_mips
       #
       #    pip wheel always tags the wheel with the HOST platform (linux_x86_64)
       #    and names the .so after the HOST Python ABI (x86_64-linux-gnu).
-      #    On the K1C, Python looks for backend_c.cpython-38-mipsel-linux-gnu.so
-      #    and pip checks the wheel tag matches linux_mipsel.  This step:
-      #      - Renames *.x86_64-linux-gnu.so → *.mipsel-linux-gnu.so
-      #      - Patches Tag: in .dist-info/WHEEL  (linux_x86_64 → linux_mipsel)
+      #    On the K1C, platform.machine() returns "mips" (not "mipsel"), so:
+      #      - pip expects tag: linux_mips  (not linux_mipsel)
+      #      - Python EXT_SUFFIX: .cpython-38-mips-linux-gnu.so
+      #    This step:
+      #      - Renames *.x86_64-linux-gnu.so → *.mips-linux-gnu.so
+      #      - Patches Tag: in .dist-info/WHEEL  (linux_x86_64 → linux_mips)
       #      - Rebuilds .dist-info/RECORD with correct SHA-256 hashes
-      #      - Repacks as a linux_mipsel-tagged .whl
+      #      - Repacks as a linux_mips-tagged .whl
+      #    NOTE: install_k1c.sh installs via manual wheel extraction and reads
+      #    the actual EXT_SUFFIX from the running Python, so the exact tag is
+      #    a best-effort for pip compatibility only.
       # -----------------------------------------------------------------------
       - name: Retag wheel for mipsel
         run: |
           WHEEL=$(ls /tmp/mipsel-wheels/zstandard-*.whl | head -1)
-          NEWWHEEL="${WHEEL/linux_x86_64/linux_mipsel}"
+          NEWWHEEL="${WHEEL/linux_x86_64/linux_mips}"
           echo "Input:  $(basename $WHEEL)"
           echo "Output: $(basename $NEWWHEEL)"
 
@@ -213,16 +218,16 @@ jobs:
           cd /tmp/wheel-retag
           unzip -q "$WHEEL"
 
-          # Rename .so files: x86_64-linux-gnu → mipsel-linux-gnu
+          # Rename .so files: x86_64-linux-gnu → mips-linux-gnu
           while IFS= read -r f; do
-            newf="${f/x86_64-linux-gnu/mipsel-linux-gnu}"
+            newf="${f/x86_64-linux-gnu/mips-linux-gnu}"
             mv "$f" "$newf"
             echo "Renamed .so: $(basename $f) → $(basename $newf)"
           done < <(find . -name "*x86_64-linux-gnu.so")
 
           # Patch WHEEL metadata tag
           WHEEL_META=$(find . -name WHEEL -path '*dist-info*' | head -1)
-          sed -i 's/linux_x86_64/linux_mipsel/g' "$WHEEL_META"
+          sed -i 's/linux_x86_64/linux_mips/g' "$WHEEL_META"
           echo "--- Patched WHEEL metadata ---"
           cat "$WHEEL_META"
 
