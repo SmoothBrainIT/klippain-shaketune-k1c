@@ -115,7 +115,14 @@ jobs:
             make -j2
             make install
             /opt/python3.8/bin/python3.8 --version
-            /opt/python3.8/bin/python3.8 -m pip install --upgrade pip setuptools wheel cffi packaging
+            # Pin build tooling to versions that work on Python 3.8/mipsel
+            /opt/python3.8/bin/python3.8 -m pip install --upgrade \
+              "pip<24.2" \
+              "setuptools<67" \
+              "wheel<0.41" \
+              "cffi<1.16" \
+              "pycparser<2.22" \
+              "packaging<24"
           '
 
       # -----------------------------------------------------------------------
@@ -129,6 +136,7 @@ jobs:
             /opt/python3.8/bin/python3.8 -m pip wheel zstandard==0.23.0 \
               --no-binary :all: \
               --no-deps \
+              --no-build-isolation \
               -w /tmp/mipsel-wheels/
             echo "=== Built wheels (chroot) ==="
             ls -lh /tmp/mipsel-wheels/
