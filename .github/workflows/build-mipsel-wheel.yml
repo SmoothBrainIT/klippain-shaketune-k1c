@@ -90,9 +90,18 @@ jobs:
           sudo chroot /mnt/mipsel-root apt-get install -y --no-install-recommends \
             python3.7-dev 2>&1 | tail -5
 
-          # The 'm' suffix (pymalloc) was the default in Python 3.7.
-          # Python 3.8+ dropped the 'm' build flag.
-          PYCONFIG=$(find /mnt/mipsel-root/usr/include -name "pyconfig.h" | head -1)
+          # Prefer the arch-specific pyconfig.h (mipsel-linux-gnu/python3.7m/)
+          # which contains the real SIZEOF_* defines for MIPS32.
+          # The generic python3.7m/pyconfig.h is just a multiarch wrapper that
+          # does #include <mipsel-linux-gnu/python3.7m/pyconfig.h>, so grep for
+          # SIZEOF values would fail there.  find ordering is non-deterministic,
+          # so we look in the arch-specific directory first.
+          PYCONFIG=$(find /mnt/mipsel-root/usr/include/mipsel-linux-gnu \
+            -name "pyconfig.h" 2>/dev/null | head -1)
+          if [ -z "$PYCONFIG" ]; then
+            # Fallback: scan all of /usr/include (older package layouts)
+            PYCONFIG=$(find /mnt/mipsel-root/usr/include -name "pyconfig.h" | head -1)
+          fi
           echo "Found mipsel pyconfig.h: $PYCONFIG"
 
           mkdir -p /tmp/mips-pyconfig
