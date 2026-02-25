@@ -97,7 +97,7 @@ jobs:
 
           mkdir -p /tmp/mips-pyconfig
           sudo cp "$PYCONFIG" /tmp/mips-pyconfig/pyconfig.h
-          chmod 644 /tmp/mips-pyconfig/pyconfig.h
+          sudo chmod 644 /tmp/mips-pyconfig/pyconfig.h
 
           echo "=== Key MIPS32 SIZEOF values ==="
           grep -E "^#define SIZEOF_(VOID_P|SIZE_T|LONG |LONG_LONG|INT )" /tmp/mips-pyconfig/pyconfig.h
