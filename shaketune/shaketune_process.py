@@ -17,6 +17,7 @@ from typing import List, Optional, Union
 
 from .helpers.accelerometer import MeasurementsManager
 from .helpers.console_output import ConsoleOutput
+from .remote_process import run_remote_process
 from .shaketune_config import ShakeTuneConfig
 
 
@@ -58,10 +59,19 @@ class ShakeTuneProcess:
                 filelist.append(filename)
 
         # Start the target function in a new process (a thread is known to cause issues with Klipper and CANbus due to the GIL)
-        self._process = Process(
-            target=self._shaketune_process_wrapper,
-            args=(self.graph_creator, filelist, self._timeout),
-        )
+        if self._config.remote_processing_url:
+            # Remote processing mode: upload data to a Docker server instead of processing locally.
+            # This is used on constrained platforms (e.g. Creality K1C / MIPS32) where numpy/matplotlib
+            # cannot be installed natively.
+            self._process = Process(
+                target=self._remote_process_wrapper,
+                args=(self.graph_creator, filelist, self._timeout),
+            )
+        else:
+            self._process = Process(
+                target=self._shaketune_process_wrapper,
+                args=(self.graph_creator, filelist, self._timeout),
+            )
         self._process.start()
 
     def wait_for_completion(self) -> None:
@@ -77,6 +87,26 @@ class ShakeTuneProcess:
             eventtime = self._reactor.pause(eventtime + 0.05)
         if not complete:
             self._handle_timeout()
+
+    def _remote_process_wrapper(self, graph_creator, filelist: List[Path], timeout) -> None:
+        """Wrapper for remote processing, mirroring the timeout pattern of _shaketune_process_wrapper."""
+        if timeout is not None:
+            timeout += 5
+            timer = threading.Timer(timeout, self._handle_timeout)
+            timer.start()
+        try:
+            # Extract serializable configure() args captured by GraphCreatorStub
+            configure_kwargs = getattr(graph_creator, 'get_configure_kwargs', lambda: {})()
+            run_remote_process(
+                self._config,
+                graph_creator.get_type(),
+                filelist,
+                self._timeout or 600,
+                configure_kwargs=configure_kwargs,
+            )
+        finally:
+            if timeout is not None:
+                timer.cancel()
 
     # This function is a simple wrapper to start the Shake&Tune process. It's needed in order to get the timeout
     # as a Timer in a thread INSIDE the Shake&Tune child process to not interfere with the main Klipper process

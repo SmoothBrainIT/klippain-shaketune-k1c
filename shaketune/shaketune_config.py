@@ -9,6 +9,7 @@
 
 
 from pathlib import Path
+from typing import Optional
 
 from .helpers.console_output import ConsoleOutput
 
@@ -33,6 +34,8 @@ class ShakeTuneConfig:
         chunk_size: int = 2,
         max_freq: float = 200.0,
         dpi: int = 150,
+        remote_processing_url: Optional[str] = None,
+        remote_api_key: Optional[str] = None,
     ) -> None:
         self._result_folder = result_folder
 
@@ -42,6 +45,8 @@ class ShakeTuneConfig:
         self.max_freq = max_freq
         self.max_freq_vibrations = max_freq * 5  # 1000Hz is the default (5 * 200.0)
         self.dpi = dpi
+        self.remote_processing_url = remote_processing_url
+        self.remote_api_key = remote_api_key
 
         self.klipper_folder = KLIPPER_FOLDER
         self.klipper_log_folder = KLIPPER_LOG_FOLDER

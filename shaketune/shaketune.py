@@ -20,10 +20,97 @@ from .commands import (
     create_vibrations_profile,
     excitate_axis_at_freq,
 )
-from .graph_creators import GraphCreatorFactory
 from .helpers.console_output import ConsoleOutput
 from .shaketune_config import ShakeTuneConfig
 from .shaketune_process import ShakeTuneProcess
+
+# Try to import graph creators. They require matplotlib/numpy which are unavailable on
+# platforms like the Creality K1C (MIPS32). On those platforms, remote_processing_url
+# must be configured so that graph generation is offloaded to a Docker server.
+try:
+    from .graph_creators import GraphCreatorFactory
+    _LOCAL_PROCESSING_AVAILABLE = True
+except ImportError:
+    _LOCAL_PROCESSING_AVAILABLE = False
+
+
+# Positional arg name mappings for each graph type's configure() method.
+# Used by GraphCreatorStub to serialize configure args for remote processing.
+_CONFIGURE_PARAM_NAMES = {
+    'input shaper': ('scv', 'max_smoothing', 'test_params', 'max_scale'),
+    'belts comparison': ('kinematics', 'test_params', 'max_scale'),
+    'axes map': ('accel', 'current_axes_map'),
+    'vibrations profile': ('kinematics', 'accel', 'motors'),
+    'static frequency': ('freq', 'duration', 'accel_per_hz'),
+}
+
+_SKIP = object()  # sentinel for non-JSON-serializable values
+
+
+def _to_serializable(value):
+    """Convert a configure() arg to a JSON-serializable form, or return _SKIP."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, '_asdict'):
+        # namedtuple (e.g. testParams) — convert to a plain list
+        return list(value)
+    if isinstance(value, (tuple, list)):
+        items = [_to_serializable(v) for v in value]
+        if any(v is _SKIP for v in items):
+            return _SKIP
+        return items
+    # Complex Python object (e.g. Motor) — cannot serialize, skip
+    return _SKIP
+
+
+class GraphCreatorStub:
+    """Lightweight graph creator stub for remote processing mode.
+
+    Does NOT import matplotlib or numpy — fully usable on constrained platforms
+    (e.g. Creality K1C / MIPS32) where those libraries are unavailable.
+
+    Provides the same interface as GraphCreator so command functions work unchanged.
+    configure() captures serializable args to send to the remote Docker server.
+    """
+
+    def __init__(self, graph_type: str, config: ShakeTuneConfig) -> None:
+        self._graph_type = graph_type
+        self._config = config
+        self._configure_kwargs = {}
+
+    def get_type(self) -> str:
+        return self._graph_type
+
+    def get_folder(self):
+        folder = self._config.get_results_folder(self._graph_type)
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def configure(self, *args, **kwargs) -> None:
+        """Capture configure args as a JSON-serializable dict for remote processing."""
+        param_names = _CONFIGURE_PARAM_NAMES.get(self._graph_type, ())
+        result = {}
+        for i, name in enumerate(param_names):
+            val = args[i] if i < len(args) else kwargs.get(name)
+            serializable = _to_serializable(val)
+            if serializable is not _SKIP:
+                result[name] = serializable
+        # Capture any extra keyword args not covered by the positional mapping
+        for k, v in kwargs.items():
+            if k not in result:
+                serializable = _to_serializable(v)
+                if serializable is not _SKIP:
+                    result[k] = serializable
+        self._configure_kwargs = result
+
+    def define_output_target(self, filepath) -> None:
+        pass  # No-op: the remote server determines its own output path
+
+    def clean_old_files(self, keep_results: int = 10) -> None:
+        pass  # Handled by remote_process.py after receiving results
+
+    def get_configure_kwargs(self) -> dict:
+        return self._configure_kwargs
 
 DEFAULT_FOLDER = '~/printer_data/config/ShakeTune_results'
 DEFAULT_NUMBER_OF_RESULTS = 10
@@ -82,7 +169,10 @@ class ShakeTune:
         max_freq = k_conf.getfloat('max_freq', default=DEFAULT_MAX_FREQ, minval=100.0)
         dpi = k_conf.getint('dpi', default=DEFAULT_DPI, minval=100, maxval=500)
         m_chunk_size = k_conf.getint('measurements_chunk_size', default=DEFAULT_MEASUREMENTS_CHUNK_SIZE, minval=2)
-        st_config = ShakeTuneConfig(result_folder_path, keep_n_results, keep_raw_data, m_chunk_size, max_freq, dpi)
+        remote_url = k_conf.get('remote_processing_url', default=None)
+        remote_key = k_conf.get('remote_api_key', default=None)
+        st_config = ShakeTuneConfig(result_folder_path, keep_n_results, keep_raw_data, m_chunk_size, max_freq, dpi,
+                                    remote_processing_url=remote_url, remote_api_key=remote_key)
         timeout = k_conf.getfloat('timeout', DEFAULT_TIMEOUT, above=0.0)
         show_macros = k_conf.getboolean('show_macros_in_webui', default=DEFAULT_SHOW_MACROS)
         return st_config, timeout, show_macros
@@ -157,7 +247,18 @@ class ShakeTune:
 
     def _cmd_helper(self, gcmd, graph_type: str, cmd_function: Callable) -> None:
         ConsoleOutput.print(f'Shake&Tune version: {ShakeTuneConfig.get_git_version()}')
-        gcreator = GraphCreatorFactory.create_graph_creator(graph_type, self._st_config)
+        if self._st_config.remote_processing_url:
+            # Remote processing mode: graph generation is offloaded to a Docker server.
+            # Use a lightweight stub that doesn't require matplotlib/numpy.
+            gcreator = GraphCreatorStub(graph_type, self._st_config)
+        elif _LOCAL_PROCESSING_AVAILABLE:
+            gcreator = GraphCreatorFactory.create_graph_creator(graph_type, self._st_config)
+        else:
+            raise gcmd.error(
+                'matplotlib/numpy are not installed and remote_processing_url is not configured. '
+                'Please either install the required dependencies or set remote_processing_url '
+                'in [shaketune] to use a Docker processing server.'
+            )
         st_process = ShakeTuneProcess(
             self._st_config,
             self._printer.get_reactor(),

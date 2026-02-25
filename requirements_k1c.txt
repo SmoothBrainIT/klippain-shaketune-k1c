@@ -1,0 +1,13 @@
+# Shake&Tune K1C minimal requirements
+#
+# These are the ONLY Python packages needed on the K1C printer itself.
+# Graph generation (numpy/matplotlib) runs on the remote Docker server — NOT on the K1C.
+#
+# IMPORTANT: zstandard requires a MIPS32-compiled wheel.
+#            The install_k1c.sh script downloads a prebuilt wheel from the fork's
+#            GitHub Releases. To build it yourself, see docs/k1c_setup.md.
+#
+# GitPython is pure Python and installs from PyPI without issues on MIPS.
+
+zstandard==0.23.0
+GitPython==3.1.41

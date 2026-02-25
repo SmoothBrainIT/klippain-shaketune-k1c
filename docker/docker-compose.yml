@@ -1,0 +1,28 @@
+services:
+  shaketune:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      # Optional API key for authentication. Leave empty to disable auth (local network use).
+      - SHAKETUNE_API_KEY=${SHAKETUNE_API_KEY:-}
+      # Optional: path to a Klipper source tree for shaper_calibrate access.
+      # Mount your local Klipper clone here to use the same version as your printer.
+      - KLIPPER_DIR=/klipper
+    volumes:
+      # Optional: mount your Klipper source for shaper_calibrate (input shaper + belts graphs)
+      # Uncomment the line below and set the path to your Klipper installation:
+      # - ~/klipper:/klipper:ro
+      # Optional: persist debug graphs between container restarts
+      - shaketune_results:/tmp/shaketune_results
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  shaketune_results:
