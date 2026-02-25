@@ -113,9 +113,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y python3.8 python3.8-dev python3.8-distutils
           python3.8 --version
-          # Bootstrap pip for Python 3.8 (deadsnakes doesn't include it by default)
-          python3.8 -m ensurepip --upgrade
-          python3.8 -m pip install --quiet --upgrade pip
+          # Bootstrap pip for Python 3.8 (deadsnakes omits ensurepip; use get-pip.py)
+          curl -sS https://bootstrap.pypa.io/pip/3.8/get-pip.py | python3.8
+          python3.8 -m pip --version
 
       # -----------------------------------------------------------------------
       # 5. Prepare patched Python 3.8 include directory for MIPS cross-compile
