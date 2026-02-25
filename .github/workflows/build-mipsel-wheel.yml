@@ -113,6 +113,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y python3.8 python3.8-dev python3.8-distutils
           python3.8 --version
+          # Bootstrap pip for Python 3.8 (deadsnakes doesn't include it by default)
+          python3.8 -m ensurepip --upgrade
+          python3.8 -m pip install --quiet --upgrade pip
 
       # -----------------------------------------------------------------------
       # 5. Prepare patched Python 3.8 include directory for MIPS cross-compile
@@ -151,14 +154,14 @@ jobs:
         run: |
           # Pre-install build tools in the Python 3.8 environment so that
           # --no-build-isolation can use them without triggering a fresh download.
-          pip3.8 install --quiet "packaging>=24.2" "setuptools>=66.1" wheel cffi
+          python3.8 -m pip install --quiet "packaging>=24.2" "setuptools>=66.1" wheel cffi
 
           mkdir -p /tmp/zstd-src /tmp/mipsel-wheels
 
           CC=mipsel-linux-gnu-gcc \
           LDSHARED="mipsel-linux-gnu-gcc -shared" \
           CFLAGS="-fPIC -march=mips32r2 -EL -I/tmp/mips-python38-include" \
-          pip3.8 wheel zstandard==0.23.0 \
+          python3.8 -m pip wheel zstandard==0.23.0 \
             --no-binary :all: \
             --no-deps \
             --no-build-isolation \
