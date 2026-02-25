@@ -3,17 +3,26 @@ name: Build MIPS32 zstandard Wheel (K1C)
 # Builds a zstandard Python 3.8 wheel for mipsel (MIPS32 little-endian),
 # targeting the Creality K1C (Ingenic X2000E, GLIBC ~2.26).
 #
-# Strategy: debootstrap creates a real Debian Buster mipsel chroot.
-# Debian 10 (Buster) officially supports mipsel and has Python 3.8 in
-# buster-backports. pip runs natively inside the chroot via QEMU user-mode
-# emulation, so the resulting wheel is a genuine mipsel cp38 binary.
+# Strategy (two-phase):
+#
+#  Phase 1 — debootstrap Debian Buster mipsel chroot.
+#    Debian 10 (Buster) officially supported mipsel; archived at archive.debian.org.
+#    Python 3.8 is NOT in buster-backports for mipsel, but Python 3.7 IS.
+#    We install python3.7-dev to get the MIPS32-specific pyconfig.h.
+#    The SIZEOF_* / HAVE_* macros in pyconfig.h are identical between
+#    Python 3.7 and 3.8 on the same hardware architecture.
+#
+#  Phase 2 — host-side cross-compilation.
+#    deadsnakes PPA provides Python 3.8 on Ubuntu 22.04.
+#    We combine:
+#      - Python 3.8 standard headers from the HOST (API/type definitions)
+#      - MIPS32-specific pyconfig.h extracted from the Buster chroot (Phase 1)
+#    mipsel-linux-gnu-gcc compiles zstandard against these patched headers.
+#    The wheel is tagged cp38-cp38-linux_mipsel.
 #
 # Outputs:
 #   - GitHub Actions artifact: zstandard-mipsel-cp38
-#   - On release: attached as zstandard-mips32.whl (the name install_k1c.sh expects)
-#
-# The install script downloads:
-#   https://github.com/SmoothBrainIT/klippain-shaketune-k1c/releases/latest/download/zstandard-mips32.whl
+#   - On release: attached as zstandard-mips32.whl (expected by install_k1c.sh)
 
 on:
   workflow_dispatch:
@@ -22,36 +31,35 @@ on:
 
 jobs:
   build-mipsel-wheel:
-    name: Build zstandard mipsel wheel in Debian Buster chroot
+    name: Build zstandard mipsel cp38 wheel
     runs-on: ubuntu-22.04
     timeout-minutes: 45
 
     steps:
       # -----------------------------------------------------------------------
-      # 1. Install debootstrap + QEMU mipsel emulation
-      #    qemu-user-static + binfmt-support registers binfmt handlers
-      #    automatically so the kernel transparently runs MIPS binaries.
+      # 1. Install tools
       # -----------------------------------------------------------------------
-      - name: Install debootstrap and QEMU
+      - name: Install tools
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             debootstrap \
             qemu-user-static \
             binfmt-support \
+            gcc-mipsel-linux-gnu \
+            g++-mipsel-linux-gnu \
             binutils-mipsel-linux-gnu
 
-          echo "binfmt handlers registered:"
-          ls /proc/sys/fs/binfmt_misc/ 2>/dev/null | grep -v register || echo "(none)"
-          ls /usr/bin/qemu-mipsel-static && echo "qemu-mipsel-static: OK"
+          echo "QEMU mipsel:"
+          ls /usr/bin/qemu-mipsel-static
+          echo "mipsel compiler:"
+          mipsel-linux-gnu-gcc --version | head -1
 
       # -----------------------------------------------------------------------
-      # 2. Bootstrap a minimal Debian Buster mipsel rootfs
-      #    Debian 10 (Buster) officially supported mipsel. It is archived at
-      #    archive.debian.org since it reached EOL in June 2024.
-      #    --foreign + second-stage: required for cross-arch bootstrapping.
+      # 2. Bootstrap Debian Buster MIPSEL chroot (to get mipsel pyconfig.h)
+      #    Buster is archived at archive.debian.org (EOL June 2024).
       # -----------------------------------------------------------------------
-      - name: Bootstrap Debian Buster MIPSEL rootfs (first stage)
+      - name: Bootstrap Debian Buster MIPSEL rootfs
         run: |
           sudo mkdir -p /mnt/mipsel-root
           sudo debootstrap \
@@ -62,84 +70,107 @@ jobs:
             buster \
             /mnt/mipsel-root \
             http://archive.debian.org/debian
-
-          echo "First stage complete, copying QEMU static binary..."
           sudo cp /usr/bin/qemu-mipsel-static /mnt/mipsel-root/usr/bin/
-          echo "QEMU binary in chroot: $(ls -lh /mnt/mipsel-root/usr/bin/qemu-mipsel-static)"
-        timeout-minutes: 10
-
-      - name: Bootstrap Debian Buster MIPSEL rootfs (second stage via QEMU)
-        run: |
           sudo chroot /mnt/mipsel-root /debootstrap/debootstrap --second-stage
-          echo "Second stage complete"
-          sudo chroot /mnt/mipsel-root uname -m
-        timeout-minutes: 10
-
-      # -----------------------------------------------------------------------
-      # 3. Configure APT: add buster-backports for Python 3.8
-      #    Python 3.8 is in buster-backports (Buster default is Python 3.7).
-      # -----------------------------------------------------------------------
-      - name: Configure APT sources in chroot
-        run: |
-          sudo tee /mnt/mipsel-root/etc/apt/sources.list > /dev/null << 'EOF'
-          deb http://archive.debian.org/debian buster main
-          deb http://archive.debian.org/debian-security buster/updates main
-          deb http://archive.debian.org/debian buster-backports main
-          EOF
-
-          # Silence "apt doesn't support phased updates" warnings on archived repos
-          sudo tee /mnt/mipsel-root/etc/apt/apt.conf.d/99phased > /dev/null << 'EOF'
-          APT::Get::Always-Include-Phased-Updates "true";
-          EOF
-
-          sudo chroot /mnt/mipsel-root apt-get update -qq 2>&1 | tail -5
-
-      # -----------------------------------------------------------------------
-      # 4. Install Python 3.8 from buster-backports + pip + gcc
-      # -----------------------------------------------------------------------
-      - name: Install Python 3.8 in chroot
-        run: |
-          sudo chroot /mnt/mipsel-root bash -c "
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get install -y --no-install-recommends \
-              -t buster-backports \
-              python3.8 python3.8-dev python3-pip gcc make
-          "
-          echo "Python version in chroot:"
-          sudo chroot /mnt/mipsel-root python3.8 --version
-          sudo chroot /mnt/mipsel-root python3.8 -c "import sys, platform; print(sys.version); print(platform.machine())"
-        timeout-minutes: 10
-
-      # -----------------------------------------------------------------------
-      # 5. Build the zstandard wheel inside the MIPSEL chroot
-      #    pip runs the native MIPS Python 3.8 binary via QEMU, so the
-      #    resulting .so is genuine mipsel and tagged cp38-cp38-linux_mipsel.
-      # -----------------------------------------------------------------------
-      - name: Build zstandard 0.23.0 wheel
-        run: |
-          sudo mkdir -p /mnt/mipsel-root/out
-
-          sudo chroot /mnt/mipsel-root bash -c "
-            pip3 install --quiet --upgrade pip wheel setuptools
-            echo '=== Building zstandard 0.23.0 ==='
-            pip3.8 wheel zstandard==0.23.0 \
-              --no-binary :all: \
-              --no-deps \
-              -w /out/
-          "
-
-          echo "=== Built wheels ==="
-          ls -lh /mnt/mipsel-root/out/
+          echo "Chroot arch: $(sudo chroot /mnt/mipsel-root uname -m)"
         timeout-minutes: 15
 
       # -----------------------------------------------------------------------
-      # 6. Collect wheel + sanity check
+      # 3. Install python3.7-dev in chroot and extract mipsel pyconfig.h
+      #    The SIZEOF_* constants are the same for Python 3.7 and 3.8 on the
+      #    same hardware; we only need the architecture-specific platform config.
+      # -----------------------------------------------------------------------
+      - name: Extract MIPS32 pyconfig.h from Buster Python 3.7
+        run: |
+          # Configure APT
+          sudo tee /mnt/mipsel-root/etc/apt/sources.list > /dev/null << 'EOF'
+          deb http://archive.debian.org/debian buster main
+          EOF
+          sudo chroot /mnt/mipsel-root apt-get update -qq 2>&1 | tail -3
+          sudo chroot /mnt/mipsel-root apt-get install -y --no-install-recommends \
+            python3.7-dev 2>&1 | tail -5
+
+          # The 'm' suffix (pymalloc) was the default in Python 3.7.
+          # Python 3.8+ dropped the 'm' build flag.
+          PYCONFIG=$(find /mnt/mipsel-root/usr/include -name "pyconfig.h" | head -1)
+          echo "Found mipsel pyconfig.h: $PYCONFIG"
+
+          mkdir -p /tmp/mips-pyconfig
+          sudo cp "$PYCONFIG" /tmp/mips-pyconfig/pyconfig.h
+          chmod 644 /tmp/mips-pyconfig/pyconfig.h
+
+          echo "=== Key MIPS32 SIZEOF values ==="
+          grep -E "^#define SIZEOF_(VOID_P|SIZE_T|LONG |LONG_LONG|INT )" /tmp/mips-pyconfig/pyconfig.h
+
+      # -----------------------------------------------------------------------
+      # 4. Install Python 3.8 on the host (deadsnakes PPA)
+      #    Needed as the build driver (running setup.py) and for Python 3.8
+      #    headers (everything EXCEPT pyconfig.h, which we override with MIPS).
+      # -----------------------------------------------------------------------
+      - name: Install host Python 3.8 (deadsnakes PPA)
+        run: |
+          sudo add-apt-repository -y ppa:deadsnakes/ppa
+          sudo apt-get update -qq
+          sudo apt-get install -y python3.8 python3.8-dev python3.8-distutils
+          python3.8 --version
+
+      # -----------------------------------------------------------------------
+      # 5. Prepare patched Python 3.8 include directory for MIPS cross-compile
+      #    Copy the host Python 3.8 headers, then replace pyconfig.h with the
+      #    MIPS32 version extracted from the Buster chroot.
+      # -----------------------------------------------------------------------
+      - name: Prepare MIPS32 Python 3.8 include directory
+        run: |
+          HOST_PY38_INC=$(python3.8 -c "import sysconfig; print(sysconfig.get_path('include'))")
+          echo "Host Python 3.8 include: $HOST_PY38_INC"
+
+          mkdir -p /tmp/mips-python38-include
+          cp -r "$HOST_PY38_INC/." /tmp/mips-python38-include/
+
+          # Override pyconfig.h with the MIPS32-specific version.
+          # The SIZEOF_VOID_P=4, SIZEOF_SIZE_T=4, SIZEOF_LONG=4 from the MIPS32
+          # pyconfig.h replace the host's 8-byte values. Everything else (Python API
+          # struct definitions, macro functions) stays from the Python 3.8 headers.
+          cp /tmp/mips-pyconfig/pyconfig.h /tmp/mips-python38-include/pyconfig.h
+
+          echo "=== Patched pyconfig.h SIZEOF values ==="
+          grep -E "^#define SIZEOF_(VOID_P|SIZE_T|LONG |LONG_LONG|INT )" \
+            /tmp/mips-python38-include/pyconfig.h
+
+      # -----------------------------------------------------------------------
+      # 6. Cross-compile zstandard 0.23.0 for mipsel
+      #    - CC=mipsel-linux-gnu-gcc: produces MIPS32 object code
+      #    - CFLAGS puts our patched include dir FIRST so pyconfig.h is found
+      #      before Python 3.8's default include path (added later by distutils)
+      #    - --plat-name linux_mipsel: wheel platform tag
+      # -----------------------------------------------------------------------
+      - name: Cross-compile zstandard for mipsel
+        run: |
+          mkdir -p /tmp/zstd-src /tmp/mipsel-wheels
+
+          pip3 download --no-binary :all: zstandard==0.23.0 -d /tmp/zstd-src -q
+          cd /tmp/zstd-src
+          tar xf zstandard-0.23.0.tar.gz
+          cd zstandard-0.23.0
+
+          CC=mipsel-linux-gnu-gcc \
+          LDSHARED="mipsel-linux-gnu-gcc -shared" \
+          CFLAGS="-fPIC -march=mips32r2 -EL -I/tmp/mips-python38-include" \
+          LDFLAGS="-L/tmp/mips-python38-include" \
+          python3.8 setup.py bdist_wheel \
+            --plat-name linux_mipsel \
+            --dist-dir /tmp/mipsel-wheels/
+
+          echo "=== Built wheels ==="
+          ls -lh /tmp/mipsel-wheels/
+
+      # -----------------------------------------------------------------------
+      # 7. Verify the wheel contains a MIPSEL binary
       # -----------------------------------------------------------------------
       - name: Verify wheel architecture
         run: |
-          WHEEL=$(ls /mnt/mipsel-root/out/zstandard-*.whl | head -1)
+          WHEEL=$(ls /tmp/mipsel-wheels/zstandard-*.whl | head -1)
           echo "Wheel: $WHEEL"
-          cp "$WHEEL" /tmp/
 
           mkdir -p /tmp/wheel-check
           cd /tmp/wheel-check
@@ -149,42 +180,43 @@ jobs:
           if [ -n "$SO_FILE" ]; then
             echo "Shared library: $SO_FILE"
             file "$SO_FILE"
-            mipsel-linux-gnu-objdump -p "$SO_FILE" | grep -E "GLIBC|NEEDED|file format" || true
+            mipsel-linux-gnu-objdump -p "$SO_FILE" 2>/dev/null \
+              | grep -E "GLIBC|NEEDED|file format" || true
           else
-            echo "WARNING: No .so file found in wheel"
+            echo "ERROR: No .so file found in wheel"
             find . -type f
             exit 1
           fi
 
       # -----------------------------------------------------------------------
-      # 7. Rename to canonical name expected by install_k1c.sh
+      # 8. Rename to canonical name expected by install_k1c.sh
       # -----------------------------------------------------------------------
       - name: Rename wheel for install_k1c.sh
         run: |
-          WHEEL=$(ls /tmp/zstandard-*.whl | head -1)
-          cp "$WHEEL" /tmp/zstandard-mips32.whl
+          WHEEL=$(ls /tmp/mipsel-wheels/zstandard-*.whl | head -1)
+          cp "$WHEEL" /tmp/mipsel-wheels/zstandard-mips32.whl
           echo "Original : $(basename $WHEEL)"
           echo "Canonical: zstandard-mips32.whl"
-          ls -lh /tmp/zstandard-*.whl
+          ls -lh /tmp/mipsel-wheels/
 
       # -----------------------------------------------------------------------
-      # 8. Upload as workflow artifact
+      # 9. Upload as workflow artifact
       # -----------------------------------------------------------------------
       - name: Upload wheel as artifact
         uses: actions/upload-artifact@v4
         with:
           name: zstandard-mipsel-cp38
-          path: /tmp/zstandard-*.whl
+          path: /tmp/mipsel-wheels/zstandard-*.whl
           if-no-files-found: error
           retention-days: 90
 
       # -----------------------------------------------------------------------
-      # 9. Attach to GitHub Release (only when triggered by a release event)
+      # 10. Attach to GitHub Release
       # -----------------------------------------------------------------------
       - name: Upload wheel to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: /tmp/zstandard-mips32.whl
+          files: /tmp/mipsel-wheels/zstandard-mips32.whl
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
