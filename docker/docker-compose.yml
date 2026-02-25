@@ -12,9 +12,11 @@ services:
       # Mount your local Klipper clone here to use the same version as your printer.
       - KLIPPER_DIR=/klipper
     volumes:
-      # Optional: mount your Klipper source for shaper_calibrate (input shaper + belts graphs)
-      # Uncomment the line below and set the path to your Klipper installation:
-      - ~/klipper:/klipper:ro
+      # Optional: mount your Klipper source for shaper_calibrate (input shaper + belts graphs).
+      # Set KLIPPER_PATH in a .env file or environment, e.g.:
+      #   echo "KLIPPER_PATH=/home/taylor/klipper" >> docker/.env
+      # Tilde (~) does not expand correctly under `sudo docker compose` — use absolute path.
+      - ${KLIPPER_PATH:-/nonexistent}:/klipper:ro
       # Optional: persist debug graphs between container restarts
       - shaketune_results:/tmp/shaketune_results
     restart: unless-stopped
