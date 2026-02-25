@@ -22,7 +22,10 @@ jobs:
 
     steps:
       # -----------------------------------------------------------------------
-      # 1. Install cross-compilation toolchain and Python 3.8
+      # 1. Install cross-compilation toolchain
+      #    Note: python3.8 is NOT in Ubuntu 22.04 apt repos. The MIPSEL Python 3.8
+      #    binary comes from the Debian sysroot download in step 2. The host Python
+      #    (3.10+) is used only to run crossenv itself.
       # -----------------------------------------------------------------------
       - name: Install cross-compilation tools
         run: |
@@ -32,8 +35,6 @@ jobs:
             g++-mipsel-linux-gnu \
             binutils-mipsel-linux-gnu \
             qemu-user-static \
-            python3.8 \
-            python3.8-dev \
             python3-pip \
             curl \
             wget
