@@ -153,7 +153,7 @@ jobs:
       #    - --no-build-isolation: use the current env's setuptools/cffi instead
       #      of letting pip download a fresh build venv (avoids setuptools>=77
       #      requiring packaging>=24.2 which isn't present in Python 3.8).
-      #    - --plat-name linux_mipsel: correct wheel platform tag for K1C
+      #    NOTE: pip wheel does NOT support --plat-name; we retag in the next step.
       # -----------------------------------------------------------------------
       - name: Cross-compile zstandard for mipsel
         run: |
@@ -166,7 +166,7 @@ jobs:
           sudo chroot /mnt/mipsel-root apt-get install -y --no-install-recommends \
             libc6-dev 2>&1 | tail -3
 
-          mkdir -p /tmp/zstd-src /tmp/mipsel-wheels
+          mkdir -p /tmp/mipsel-wheels
 
           CC=mipsel-linux-gnu-gcc \
           LDSHARED="mipsel-linux-gnu-gcc -shared --sysroot=/mnt/mipsel-root" \
@@ -176,14 +176,88 @@ jobs:
             --no-binary :all: \
             --no-deps \
             --no-build-isolation \
-            --plat-name linux_mipsel \
             -w /tmp/mipsel-wheels/
 
-          echo "=== Built wheels ==="
+          echo "=== Built wheels (raw, before retag) ==="
           ls -lh /tmp/mipsel-wheels/
 
       # -----------------------------------------------------------------------
-      # 7. Verify the wheel contains a MIPSEL binary with acceptable GLIBC reqs
+      # 7. Retag wheel: fix platform tag + .so filename for mipsel
+      #
+      #    pip wheel always tags the wheel with the HOST platform (linux_x86_64)
+      #    and names the .so after the HOST Python ABI (x86_64-linux-gnu).
+      #    On the K1C, Python looks for backend_c.cpython-38-mipsel-linux-gnu.so
+      #    and pip checks the wheel tag matches linux_mipsel.  This step:
+      #      - Renames *.x86_64-linux-gnu.so → *.mipsel-linux-gnu.so
+      #      - Patches Tag: in .dist-info/WHEEL  (linux_x86_64 → linux_mipsel)
+      #      - Rebuilds .dist-info/RECORD with correct SHA-256 hashes
+      #      - Repacks as a linux_mipsel-tagged .whl
+      # -----------------------------------------------------------------------
+      - name: Retag wheel for mipsel
+        run: |
+          WHEEL=$(ls /tmp/mipsel-wheels/zstandard-*.whl | head -1)
+          NEWWHEEL="${WHEEL/linux_x86_64/linux_mipsel}"
+          echo "Input:  $(basename $WHEEL)"
+          echo "Output: $(basename $NEWWHEEL)"
+
+          mkdir /tmp/wheel-retag
+          cd /tmp/wheel-retag
+          unzip -q "$WHEEL"
+
+          # Rename .so files: x86_64-linux-gnu → mipsel-linux-gnu
+          while IFS= read -r f; do
+            newf="${f/x86_64-linux-gnu/mipsel-linux-gnu}"
+            mv "$f" "$newf"
+            echo "Renamed .so: $(basename $f) → $(basename $newf)"
+          done < <(find . -name "*x86_64-linux-gnu.so")
+
+          # Patch WHEEL metadata tag
+          WHEEL_META=$(find . -name WHEEL -path '*dist-info*' | head -1)
+          sed -i 's/linux_x86_64/linux_mipsel/g' "$WHEEL_META"
+          echo "--- Patched WHEEL metadata ---"
+          cat "$WHEEL_META"
+
+          # Rebuild RECORD with correct SHA-256 checksums
+          cat > /tmp/rebuild_record.py << 'PYEOF'
+          import hashlib, base64, os, glob, sys
+
+          def sha256_hash(path):
+              with open(path, 'rb') as f:
+                  d = hashlib.sha256(f.read()).digest()
+              return 'sha256=' + base64.urlsafe_b64encode(d).decode().rstrip('=')
+
+          os.chdir('/tmp/wheel-retag')
+          record_files = glob.glob('**/*.dist-info/RECORD', recursive=True)
+          if not record_files:
+              print("No RECORD found, skipping")
+              sys.exit(0)
+          record_rel = record_files[0].replace('\\', '/')
+
+          lines = []
+          for root, dirs, files in os.walk('.'):
+              dirs.sort()
+              for fn in sorted(files):
+                  fp = os.path.join(root, fn)
+                  rel = fp[2:].replace('\\', '/')  # strip leading ./
+                  if rel == record_rel:
+                      lines.append(f'{rel},,')
+                  else:
+                      lines.append(f'{rel},{sha256_hash(fp)},{os.path.getsize(fp)}')
+
+          with open(record_rel, 'w', newline='') as f:
+              f.write('\n'.join(lines) + '\n')
+          print(f'Rebuilt RECORD: {len(lines)} entries')
+          PYEOF
+          python3.8 /tmp/rebuild_record.py
+
+          # Repack as the correctly-tagged wheel
+          zip -qr "$NEWWHEEL" .
+          rm "$WHEEL"
+          echo "=== Retagged wheels ==="
+          ls -lh /tmp/mipsel-wheels/
+
+      # -----------------------------------------------------------------------
+      # 8. Verify the wheel contains a MIPSEL binary with acceptable GLIBC reqs
       # -----------------------------------------------------------------------
       - name: Verify wheel architecture
         run: |
