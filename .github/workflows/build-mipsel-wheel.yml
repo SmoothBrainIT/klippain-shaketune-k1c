@@ -145,10 +145,15 @@ jobs:
       #    - CC=mipsel-linux-gnu-gcc: produces MIPS32 object code
       #    - CFLAGS puts our patched include dir FIRST so pyconfig.h is found
       #      before Python 3.8's default include path (added later by distutils)
+      #    - LDSHARED/LDFLAGS use --sysroot=/mnt/mipsel-root so the linker
+      #      resolves libc/libpthread against Buster's glibc 2.28 stubs instead
+      #      of Ubuntu 22.04's glibc 2.35 stubs.  Without this the wheel would
+      #      require GLIBC_2.34 (the libpthread→libc merge in glibc 2.34), which
+      #      the K1C's older glibc does not provide.
       #    - --no-build-isolation: use the current env's setuptools/cffi instead
       #      of letting pip download a fresh build venv (avoids setuptools>=77
       #      requiring packaging>=24.2 which isn't present in Python 3.8).
-      #    - --plat-name linux_mipsel: wheel platform tag
+      #    - --plat-name linux_mipsel: correct wheel platform tag for K1C
       # -----------------------------------------------------------------------
       - name: Cross-compile zstandard for mipsel
         run: |
@@ -156,22 +161,29 @@ jobs:
           # --no-build-isolation can use them without triggering a fresh download.
           python3.8 -m pip install --quiet "packaging>=24.2" "setuptools>=66.1" wheel cffi
 
+          # Ensure libc6-dev is in the Buster chroot (needed for sysroot linking).
+          # python3.7-dev already pulled most of it in; this is a no-op if present.
+          sudo chroot /mnt/mipsel-root apt-get install -y --no-install-recommends \
+            libc6-dev 2>&1 | tail -3
+
           mkdir -p /tmp/zstd-src /tmp/mipsel-wheels
 
           CC=mipsel-linux-gnu-gcc \
-          LDSHARED="mipsel-linux-gnu-gcc -shared" \
+          LDSHARED="mipsel-linux-gnu-gcc -shared --sysroot=/mnt/mipsel-root" \
           CFLAGS="-fPIC -march=mips32r2 -EL -I/tmp/mips-python38-include" \
+          LDFLAGS="--sysroot=/mnt/mipsel-root" \
           python3.8 -m pip wheel zstandard==0.23.0 \
             --no-binary :all: \
             --no-deps \
             --no-build-isolation \
+            --plat-name linux_mipsel \
             -w /tmp/mipsel-wheels/
 
           echo "=== Built wheels ==="
           ls -lh /tmp/mipsel-wheels/
 
       # -----------------------------------------------------------------------
-      # 7. Verify the wheel contains a MIPSEL binary
+      # 7. Verify the wheel contains a MIPSEL binary with acceptable GLIBC reqs
       # -----------------------------------------------------------------------
       - name: Verify wheel architecture
         run: |
@@ -186,8 +198,12 @@ jobs:
           if [ -n "$SO_FILE" ]; then
             echo "Shared library: $SO_FILE"
             file "$SO_FILE"
+            echo "=== Dynamic dependencies ==="
             mipsel-linux-gnu-objdump -p "$SO_FILE" 2>/dev/null \
               | grep -E "GLIBC|NEEDED|file format" || true
+            echo "=== GLIBC symbol versions used ==="
+            mipsel-linux-gnu-objdump -T "$SO_FILE" 2>/dev/null \
+              | grep "GLIBC" | awk '{print $NF, $(NF-1)}' | sort -u || true
           else
             echo "ERROR: No .so file found in wheel"
             find . -type f
