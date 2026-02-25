@@ -14,7 +14,7 @@ services:
     volumes:
       # Optional: mount your Klipper source for shaper_calibrate (input shaper + belts graphs)
       # Uncomment the line below and set the path to your Klipper installation:
-      # - ~/klipper:/klipper:ro
+      - ~/klipper:/klipper:ro
       # Optional: persist debug graphs between container restarts
       - shaketune_results:/tmp/shaketune_results
     restart: unless-stopped
