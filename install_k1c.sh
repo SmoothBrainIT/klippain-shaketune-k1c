@@ -162,11 +162,15 @@ install_python_deps() {
     #   (b) pip's platform tag (linux_mips / linux_mipsel) varies by firmware
     #   (c) the installed .so must match Python's actual EXT_SUFFIX, which we
     #       read at runtime from sysconfig rather than assuming a fixed suffix.
-    ZSTD_WHEEL_URL="https://github.com/SmoothBrainIT/klippain-shaketune-k1c/releases/latest/download/zstandard-mips32.whl"
+    #
+    # NOTE: We use the GitHub API (not /releases/latest/download/) because
+    #   /releases/latest skips pre-releases. The API returns all releases and
+    #   browser_download_url is a direct CDN link with no redirect chain.
+    GITHUB_RELEASES_API="https://api.github.com/repos/SmoothBrainIT/klippain-shaketune-k1c/releases"
 
     # Write the install helper to a temp file to avoid shell-quoting issues.
     cat > /tmp/_st_zstd_install.py << 'PYEOF'
-import os, sys, ssl, shutil, zipfile, sysconfig
+import os, sys, ssl, json, shutil, zipfile, sysconfig
 
 try:
     import site
@@ -175,18 +179,44 @@ try:
 except Exception:
     site_pkgs = sysconfig.get_path("purelib")
 
-ext      = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
-wheel_url = sys.argv[1]
+ext        = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+api_url    = sys.argv[1]
 wheel_path = "/tmp/zstandard_mips32.whl"
 
 print("[SETUP] EXT_SUFFIX   :", ext)
 print("[SETUP] site-packages:", site_pkgs)
 
-# --- Download via Python urllib (handles TLS + redirects better than busybox wget) ---
-print("[SETUP] Downloading", wheel_url)
+import urllib.request
+ctx = ssl._create_unverified_context()
+
+# --- Resolve direct CDN URL via GitHub releases API (works for pre-releases) ---
+print("[SETUP] Resolving wheel URL via GitHub API...")
 try:
-    import urllib.request
-    ctx = ssl._create_unverified_context()
+    req = urllib.request.Request(
+        api_url,
+        headers={"User-Agent": "install_k1c/1.0",
+                 "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, context=ctx) as resp:
+        releases = json.loads(resp.read().decode())
+    wheel_url = None
+    for release in releases:
+        for asset in release.get("assets", []):
+            if asset["name"] == "zstandard-mips32.whl":
+                wheel_url = asset["browser_download_url"]
+                break
+        if wheel_url:
+            break
+    if not wheel_url:
+        raise RuntimeError("zstandard-mips32.whl not found in any release")
+    print("[SETUP] Wheel URL    :", wheel_url)
+except Exception as e:
+    print("[ERROR] Could not resolve wheel URL:", e, file=sys.stderr)
+    sys.exit(1)
+
+# --- Download via Python urllib (browser_download_url is direct CDN, no redirect) ---
+print("[SETUP] Downloading zstandard-mips32.whl ...")
+try:
     req = urllib.request.Request(wheel_url, headers={"User-Agent": "install_k1c/1.0"})
     with urllib.request.urlopen(req, context=ctx) as resp:
         data = resp.read()
@@ -235,7 +265,7 @@ os.remove(wheel_path)
 print("[SETUP] zstandard extraction complete.")
 PYEOF
 
-    if "$PYTHON" /tmp/_st_zstd_install.py "$ZSTD_WHEEL_URL"; then
+    if "$PYTHON" /tmp/_st_zstd_install.py "$GITHUB_RELEASES_API"; then
         if "$PYTHON" -c "import zstandard; print('[SETUP] zstandard', zstandard.__version__, 'import OK')"; then
             printf "[SETUP] zstandard installed successfully.\n"
         else
